@@ -18,8 +18,9 @@
 #define DEBUG 1
 //the thread function
 void *connection_handler(void *);
+void connect_server(char *client_message,struct hostent *host_info, void *proxy_sock,int port);
 int check_file_type(FILE *file, char* RequestURL);
-struct hostent *host_info;
+
 
 int main(int argc , char *argv[])
 {
@@ -106,6 +107,52 @@ int main(int argc , char *argv[])
 	return 0;
 }
 
+void connect_server(char *client_message,struct hostent *host_info, void *proxy_sock, int port){
+	int socket_desc;
+	int sock = *(int*)proxy_sock;
+	struct sockaddr_in server;
+	socket_desc = socket(AF_INET , SOCK_STREAM , 0);
+	printf("SENDING:\n%s\n",client_message);//Print Message recieved by HTML site
+	if (socket_desc == -1)
+	{
+		printf("Could not create socket");
+	}
+	puts("Socket for Server created");
+	server.sin_family = AF_INET;
+	//memcpy(&server.sin_addr.s_addr, host_info->h_addr, host_info->h_length);
+	//char IP[] = inet_ntoa(*(struct in_addr*)host_info->h_addr);
+	//printf("IP:%s",IP);
+	server.sin_addr.s_addr = inet_addr(inet_ntoa(*(struct in_addr*)host_info->h_addr));
+	server.sin_port = htons( port );
+    
+
+//Connect with Client
+	if (connect(socket_desc, (struct sockaddr *)&server, sizeof(server)) < 0) {
+        perror("Error connecting to server");
+        return;
+    }
+//Forward Request to Client
+	if (send(socket_desc, client_message, strlen(client_message), 0) < 0) {
+        perror("Error sending request");
+        return;
+    }
+	memset(client_message, 0 ,20000);
+	int bytes_received = recv(socket_desc, client_message, 20000, 0);
+    if (bytes_received < 0){
+        perror("ERROR reading from server socket");
+	}
+	printf("Responce:%d|%s\n",bytes_received,client_message);
+	// char Test[] = "200 OK";
+	// if(send(socket_desc, Test, strlen(Test), 0) < 0){
+    // 	perror("ERROR writing to client socket");
+	// }
+	//Forawrd Response to Client
+	if(send(sock, client_message, bytes_received, 0) < 0){
+    	perror("ERROR writing to client socket");
+	}
+	close(socket_desc);//Close Output socket
+}
+
 /*
  * This will handle connection for each client
  * */
@@ -113,170 +160,107 @@ void *connection_handler(void *socket_desc)
 {
 	//Get the socket descriptor
 	int sock = *(int*)socket_desc;
-	int read_size, length, error =200, type = 7, isimage=0;
-	char *message , client_message[2000], file_length[20];
-    char *RequestMethod, *RequestURL;
-	char ret [10000], FinalVersion[2000], FinalType[1000];
+	int read_size, length, error =200, type = 7, isimage=0, port;
+	char *message , client_message[20000], file_length[20];
+    char *RequestMethod, *RequestURL, *RequestHost;
+	char CompareMethod[256];
+	char FinalVersion[2000], FinalType[1000];
+	char host[256];
 	size_t bytes_read;
 	DIR *dir; FILE *file; FILE *out_bin; 
 	struct stat sb;
     struct dirent *entry;
 	char *RequestVersion; 
 	char *ifClose;
+	struct hostent *host_info;
 	
 	
 	//Receive a message from client
 	while( (read_size = recv(sock , client_message , 2000 , 0)) > 0 )
 	{
-		//Process Client Message
-		//printf("STRING%s",client_message);
-		// host_info = gethostbyname("www.google.com");
-		// printf("Result %s\n", host_info->h_name);
-		// host_info = gethostbyname("Notasite.com");
-		// if (host_info == NULL){
-		// 	printf("Result2 is sad\n");
-		// }
-		// else{
-		// printf("Result2 %s/n", host_info->h_name);
-		// }
-        char *token = strtok(client_message, " \t");
-		ifClose = strstr(client_message, "Close");
-		if (ifClose != NULL){
-			puts("Client Closed Via Request\n");
-			return 0; //EXIT
+	//Extract Host, Request Method, Request Version and Request URL
+		char *hostPtr = strstr(client_message, "Host:");
+		if (hostPtr != NULL){
+			hostPtr += strlen("Host: ");
+			int i = 0;
+			while(hostPtr[i] != ' ' && hostPtr[i] != '\r' && hostPtr[i] != '\n' && hostPtr[i] != '\0' && hostPtr[i] != ':'){
+				host[i] = hostPtr[i];
+				i++;
+			}
+			host[i] = '\0';
+			char *portPtr = strchr(host, ':');
+			if (portPtr != NULL){
+				port = atoi(portPtr + 1);
+			}
+			
+			
 		}
+		else{
+			printf("Host Not Found");
+		}
+		strcpy(FinalVersion, client_message);
+        char *token = strtok(client_message, " \t");
         RequestMethod = token;
         token = strtok(NULL, " \t");
         RequestURL = token;
-		//for (int i = 0; RequestURL[i] != '\0'; i++){RequestURL[i] = RequestURL[i+1];}
         token = strtok(NULL, " \t");
         RequestVersion = token;
-		//strcpy(RequestVersion,token);
 		RequestVersion[8] = '\0';
-        
-		//Method Check
-		if (strcmp(RequestMethod, "GET") != 0){send(sock , "405 Method Not Allowed\n" , strlen("405 Method Not Allowed\n"),0);connection_handler(&sock);}
-		//Version Check
-		if ((strncmp(RequestVersion, "HTTP/1.1",sizeof("HTTP/1.1")) != 0) && (strncmp(RequestVersion, "HTTP/1.0",sizeof("HTTP/1.0")) != 0)){ send(sock , "505 HTTP Version Not Supported\n" , strlen("505 HTTP Version Not Supported\n"),0);connection_handler(&sock);}
-		strcpy(FinalVersion, RequestVersion);
-		
-		#if DEBUG
-		printf ("WHAT:%s:%s:%s|",RequestMethod,RequestURL,RequestVersion);
-		#endif
-		//Determine Valid URL
-		host_info = gethostbyname(RequestURL);
-		if (host_info == NULL){
-			printf("Result2 is sad\n");
-		}
-		else{
-		printf("Result2 %s/n", host_info->h_name);
-		}
+
 		
 
+        //RequestHost = token;
         
-		// //Determine File
-        // file = fopen(RequestURL, "rb");
-		// if (file == NULL){
-		// 	perror("Error opening file");
-		// 	switch(errno){
-		// 		case EACCES: //Insufficient Permissions
-		// 			send(sock , "403 Forbidden\n" , strlen("403 Forbidden\n"),0);
-		// 			connection_handler(&sock);
-		// 		break;
-		// 		case EISDIR://Is a directory SHOULD NEVER BE HERE
-		// 			strcat(RequestURL, "/index.html");
-		// 			file = fopen(RequestURL, "rb");
-		// 		break;
-		// 		case EINTR://No such File
-		// 			send(sock , "404 Not Found\n" , strlen("404 Not Found\n"),0);
-		// 			connection_handler(&sock);
-		// 		break;
-		// 		default:
-		// 			send(sock , "404 Not Found\n" , strlen("404 Not Found\n"),0);
-		// 			connection_handler(&sock);
-		// 		break;
-		// 	}
-		// }
-		
-        // fseek(file, 0, SEEK_END); length = ftell(file); fseek(file, 0 , SEEK_SET);
-		// message = (char *)malloc(length+1);
-        // fread(message, length, 1, file);
-        // message[length] = '\0';
-		// fseek(file, 0 , SEEK_SET);
-		// //CALL check_type
-		// type = check_file_type(file, RequestURL);
-		// fseek(file, 0 , SEEK_SET);
-		// switch(type){
-		// 	case 0:
-		// 		strcpy(FinalType,"text/html");
-				
-		// 	break;
-		// 	case 1:
-		// 		strcpy(FinalType,"image/png");
-		// 		isimage = 1;
-				
-		// 	break;
-		// 	case 2:
-		// 		strcpy(FinalType,"image/gif");
-		// 		isimage = 1;
-				
-		// 	break;
-		// 	case 3:
-		// 		strcpy(FinalType,"image/jpg");
-		// 		isimage = 1;
-				
-		// 	break;
-		// 	case 4:
-		// 		strcpy(FinalType,"image/x-icon");
-		// 		isimage = 1;
-				
-		// 	break;
-		// 	case 5:
-		// 		strcpy(FinalType,"text/css");
-				
-		// 	break;
-		// 	case 6:
-		// 		strcpy(FinalType,"application/javascript");
-		// 		isimage = 1;
-				
-		// 	break;
-		// 	default:
-		// 		strcpy(FinalType,"text/plain");
-		// 	break;
-		// }
-        
-		// //Process Request
-        // printf("METHOD: %s, URL:%s, VERSION:%s TYPE:%s\n", RequestMethod, RequestURL, RequestVersion, FinalType);
-        // strcat(FinalVersion, " 200 OK\r\n");
-        // strcat(FinalVersion, "Content-Type: ");
-		// strcat(FinalVersion, FinalType);
-		// strcat(FinalVersion, " \r\n");
-        // sprintf(file_length, "%d", length);
-        // strcat(FinalVersion, "Content-Length: ");
-        // strcat(FinalVersion, file_length);
-        // strcat(FinalVersion, "\r\n\r\n");
-		// //Process File content
-		// if(isimage == 0){ 
-		// 	strcat(FinalVersion, message);
-		// 	printf("HERE:%s\n", FinalVersion);
-        // 	send(sock , FinalVersion, strlen(FinalVersion),0);
-		// 	memset(RequestVersion, '\0', strlen(RequestVersion));
-		// 	memset(RequestURL, '\0', strlen(RequestURL));
-		// 	memset(RequestMethod, '\0', strlen(RequestMethod));
-		// 	memset(message, '\0', strlen(message));
-		// 	memset(FinalVersion, '\0', strlen(FinalVersion));
+		strcpy(CompareMethod, RequestMethod);
+		//printf ("WHAT:%s:%s:%s:%s|",RequestMethod,RequestURL,RequestVersion,RequestHost);
+	//Method Check
+		if (strcmp(CompareMethod, "GET") != 0){
 			
-		// }
-		// else{
-		// 	printf("HERE:%s\n", FinalVersion);
-		// 	send(sock , FinalVersion, strlen(FinalVersion),0);
-		// 	//while ((bytes_read = fgetc(file)) != EOF){fputc(bytes_read,socket_desc);}
-		// 	send(sock , message, length,0);
-		// }
-        
-        
-		//memset(message, '\0', sizeof(message));
-        
+			//send(sock , "405 Method Not Allowed\n" , strlen("405 Method Not Allowed\n"),0);
+			//connection_handler(&sock);
+		}
+
+	//Version Check
+		if ((strncmp(RequestVersion, "HTTP/1.1",sizeof("HTTP/1.1")) != 0) && (strncmp(RequestVersion, "HTTP/1.0",sizeof("HTTP/1.0")) != 0)){ send(sock , "505 HTTP Version Not Supported\n" , strlen("505 HTTP Version Not Supported\n"),0);connection_handler(&sock);}
+		
+	//UHostCheck
+		if (strcmp(host, "detectportal.firefox.com") == 0 || strcmp(host, "detectportal.firefox") == 0 || strcmp(CompareMethod, "GET") != 0){
+			//printf ("OH MY %s\n",host);
+			//recv(sock,client_message,2000,0);
+			//DO NOTHING
+		}
+	//Send request to Server
+		else{
+			printf ("WHAT:%s:%s:%s:%s|\n",RequestMethod,RequestURL,RequestVersion,host);
+			//Determine Valid URL
+			host_info = gethostbyname(host);
+			if (host_info == NULL){
+				printf("HOST NAME IS INVALID\n");
+			}
+			else{
+				struct in_addr **addr_list;
+
+    		addr_list = (struct in_addr **)host_info->h_addr_list;
+    			if (addr_list[0] != NULL) {
+        		printf("%s\n", inet_ntoa(*addr_list[0]));
+    				}
+				//printf("HOST VERIFIED: %s\n", inet_ntoa(addr_list));
+			}
+			//Connect to HTTP
+			
+			// strcat(FinalVersion, RequestMethod); strcat(FinalVersion, " ");
+			// strcat(FinalVersion, RequestURL); strcat(FinalVersion, " ");
+			// strcat(FinalVersion, RequestVersion); strcat(FinalVersion, " ");
+			int *new_sock;
+			new_sock = malloc(1);
+			*new_sock = sock;
+			connect_server(FinalVersion,host_info,(void*)new_sock,80);
+			// if(recv(sock , client_message , 20000 , 0)<0){
+			// 	printf("No recieve");
+			// }
+
+		}
+        printf("END OF LOOP\n");
 	}
 
 	if(read_size == 0)

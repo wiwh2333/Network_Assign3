@@ -137,18 +137,16 @@ void connect_server(char *client_message,struct hostent *host_info, void *proxy_
         return;
     }
 	memset(client_message, 0 ,20000);
-	int bytes_received = recv(socket_desc, client_message, 20000, 0);
-    if (bytes_received < 0){
-        perror("ERROR reading from server socket");
-	}
-	printf("Responce:%d|%s\n",bytes_received,client_message);
-	// char Test[] = "200 OK";
-	// if(send(socket_desc, Test, strlen(Test), 0) < 0){
-    // 	perror("ERROR writing to client socket");
-	// }
+	int bytes_received;
+	while((bytes_received = recv(socket_desc, client_message, 1000, 0))>0){
+    	if (bytes_received < 0){
+        	perror("ERROR reading from server socket");
+		}
+		printf("Responce:%d|%s\n",bytes_received,client_message);
 	//Forawrd Response to Client
-	if(send(sock, client_message, bytes_received, 0) < 0){
-    	perror("ERROR writing to client socket");
+		if(send(sock, client_message, bytes_received, 0) < 0){
+    		perror("ERROR writing to client socket");
+		}
 	}
 	close(socket_desc);//Close Output socket
 }

@@ -123,7 +123,6 @@ int give_cache(char *md5, void *proxy_sock){
 	int bytes_read;
 	int socket_desc;
 	int sock = *(int*)proxy_sock;
-	printf("MD5%s\n",md5);
 	FILE *file = fopen(md5, "rb");
     if (file == NULL) {
         printf("Error opening file\n");
@@ -146,8 +145,9 @@ int is_cached(char *RequestURL, char *digest){
 	EVP_MD_CTX *mdctx;
 	const EVP_MD *md;
 	int md_len;
-	char inter[300];
+	char inter[300]=" ";
 	char bin[100];
+	//memset(inter, 0 ,300);
 	printf("IS_CACHED_IN%s\n",RequestURL);
 	// Initialize the MD context
     mdctx = EVP_MD_CTX_new();
@@ -175,26 +175,17 @@ int is_cached(char *RequestURL, char *digest){
         return -1;
     }
     // Finalize the digest and store it in the output buffer
-    if (EVP_DigestFinal_ex(mdctx, digest, &md_len) != 1) {
+    if (EVP_DigestFinal_ex(mdctx, inter, &md_len) != 1) {
         // Handle error
         EVP_MD_CTX_free(mdctx);
         return -1;
     }
-	int len = strlen(digest);
+	int len = strlen(inter);
 	int i = 0;
-	printf("IS_CACHED_OUT2%x\n",digest);
-	BIO *bio, *b64;
-    BUF_MEM *bufferPtr;
-    b64 = BIO_new(BIO_f_base64());
-    bio = BIO_new(BIO_s_mem());
-    bio = BIO_push(b64, bio);
-    BIO_write(bio, digest, md_len);
-    BIO_flush(bio);
-    BIO_get_mem_ptr(bio, &bufferPtr);
-	// for (int i = 0; i < len; i++) {
-    //     sprintf(&digest[i*2], "%02x", inter[i]); // Convert each byte to hexadecimal string
-    // }
-	strcpy(digest,bufferPtr->data);
+	printf("IS_CACHED_OUT1%x\n",inter);
+	for (int i = 0; i < len; i++) {
+        sprintf(&digest[i*2], "%02x", inter[i]); // Convert each byte to hexadecimal string
+    }
 	printf("IS_CACHED_OUT2%s\n",digest);
 	snprintf(bin, sizeof(bin), "%s.bin", digest);
 	printf("IS_CACHED_OUT3%s\n",digest);
@@ -211,8 +202,12 @@ void connect_server(char *client_message,struct hostent *host_info, void *proxy_
 	struct sockaddr_in server;
 	socket_desc = socket(AF_INET , SOCK_STREAM , 0);
 	char* URL;
-	printf("AHHH%s\n",RequestURL);
-	strcpy(URL, RequestURL);
+	printf("AHHH2%s\n",RequestURL);
+	// strcpy(URL, RequestURL);
+	// for (int i = 0; i < strlen(RequestURL); i++){
+	// 	URL[i] = RequestURL[i];
+	// }
+
 	printf("SENDING:\n%s\n",client_message);//Print Message recieved by HTML site
 	if (socket_desc == -1)
 	{
@@ -239,8 +234,8 @@ void connect_server(char *client_message,struct hostent *host_info, void *proxy_
     }
 	memset(client_message, 0 ,20000);
 	int bytes_received;
-	printf("AHHH%s\n",URL);
-	FILE *file = fopen(URL, "ab");
+	printf("AHHH3%s\n",RequestURL);
+	FILE *file = fopen(RequestURL, "ab");
 	if (file == NULL){printf("ERROR w/ FILE");}
 	while((bytes_received = recv(socket_desc, client_message, 1000, 0))>0){
     	if (bytes_received < 0){
@@ -268,7 +263,7 @@ void *connection_handler(void *socket_desc)
 	char *message , client_message[20000], file_length[20];
     char *RequestMethod, *RequestURL, *RequestHost;
 	char CompareMethod[256];
-	char FinalVersion[2000], FinalType[1000], FinalURL[266];
+	char FinalVersion[2000], FinalType[1000], FinalURL[1266];
 	char host[256];
 	size_t bytes_read;
 	DIR *dir; FILE *file; FILE *out_bin; 
@@ -280,7 +275,7 @@ void *connection_handler(void *socket_desc)
 	FILE *block;
 	int blocked = 0, cached = 0;
 	char line[256];
-	char digest[256];
+	char digest[1000];
 	
 	//Receive a message from client
 	while( (read_size = recv(sock , client_message , 2000 , 0)) > 0 )

@@ -14,6 +14,8 @@
 #include <sys/stat.h>  //For stat()
 #include <netdb.h> //For gethostbyname()
 #include <openssl/evp.h> //For MD5()
+#include <openssl/bio.h>
+#include <openssl/buffer.h>
 #include <time.h> //For cache timing
 
 #define MIN(a,b) ((a) < (b) ? (a) : (b))
@@ -23,6 +25,7 @@ void *connection_handler(void *);
 void connect_server(char *client_message,struct hostent *host_info, void *proxy_sock,int port,char *RequestURL);
 int check_file_type(FILE *file, char* RequestURL);
 int is_cached(char* RequestURL, char* digest);
+int is_file_present(const char *folder_name, const char *file_name);
 
 typedef struct {
 	char url[256];
@@ -115,11 +118,37 @@ int main(int argc , char *argv[])
 	
 	return 0;
 }
+int give_cache(char *md5, void *proxy_sock){
+	char buffer[1000];
+	int bytes_read;
+	int socket_desc;
+	int sock = *(int*)proxy_sock;
+	printf("MD5%s\n",md5);
+	FILE *file = fopen(md5, "rb");
+    if (file == NULL) {
+        printf("Error opening file\n");
+        return 0;
+    }
+	while ((bytes_read = fread(buffer, 1, 1000, file)) > 0) {
+        if(send(sock, buffer, bytes_read, 0) < 0){
+    		printf("ERROR writing to client socket\n");
+			return 0;
+		}
+		printf("Writing\n");
+    }
+	fclose(file);
+	//close(socket_desc);//Close Output socket
+	return 1;
+
+}
+
 int is_cached(char *RequestURL, char *digest){
 	EVP_MD_CTX *mdctx;
 	const EVP_MD *md;
 	int md_len;
-	
+	char inter[300];
+	char bin[100];
+	printf("IS_CACHED_IN%s\n",RequestURL);
 	// Initialize the MD context
     mdctx = EVP_MD_CTX_new();
     if (mdctx == NULL) {
@@ -151,7 +180,29 @@ int is_cached(char *RequestURL, char *digest){
         EVP_MD_CTX_free(mdctx);
         return -1;
     }
-	
+	int len = strlen(digest);
+	int i = 0;
+	printf("IS_CACHED_OUT2%x\n",digest);
+	BIO *bio, *b64;
+    BUF_MEM *bufferPtr;
+    b64 = BIO_new(BIO_f_base64());
+    bio = BIO_new(BIO_s_mem());
+    bio = BIO_push(b64, bio);
+    BIO_write(bio, digest, md_len);
+    BIO_flush(bio);
+    BIO_get_mem_ptr(bio, &bufferPtr);
+	// for (int i = 0; i < len; i++) {
+    //     sprintf(&digest[i*2], "%02x", inter[i]); // Convert each byte to hexadecimal string
+    // }
+	strcpy(digest,bufferPtr->data);
+	printf("IS_CACHED_OUT2%s\n",digest);
+	snprintf(bin, sizeof(bin), "%s.bin", digest);
+	printf("IS_CACHED_OUT3%s\n",digest);
+	if(is_file_present("cache",bin)){
+		printf("FILE IS HERE\n");
+		return 1;
+	}
+	else{printf("NO FILE HERE\n");return 0;}
 }
 
 void connect_server(char *client_message,struct hostent *host_info, void *proxy_sock, int port, char *RequestURL){
@@ -198,7 +249,6 @@ void connect_server(char *client_message,struct hostent *host_info, void *proxy_
 		printf("Responce:%d|%s\n",bytes_received,client_message);
 		if(fwrite(client_message, 1, bytes_received, file) != bytes_received){printf("ERROR WRITING TO OUT");fclose(file);}
 	//Forawrd Response to Client
-		printf("Here");
 		if(send(sock, client_message, bytes_received, 0) < 0){
     		perror("ERROR writing to client socket");
 		}
@@ -218,7 +268,7 @@ void *connection_handler(void *socket_desc)
 	char *message , client_message[20000], file_length[20];
     char *RequestMethod, *RequestURL, *RequestHost;
 	char CompareMethod[256];
-	char FinalVersion[2000], FinalType[1000], FinalURL[256];
+	char FinalVersion[2000], FinalType[1000], FinalURL[266];
 	char host[256];
 	size_t bytes_read;
 	DIR *dir; FILE *file; FILE *out_bin; 
@@ -228,7 +278,7 @@ void *connection_handler(void *socket_desc)
 	char *ifClose;
 	struct hostent *host_info;
 	FILE *block;
-	int blocked = 0;
+	int blocked = 0, cached = 0;
 	char line[256];
 	char digest[256];
 	
@@ -326,10 +376,19 @@ void *connection_handler(void *socket_desc)
 			int *new_sock;
 			new_sock = malloc(1);
 			*new_sock = sock;
-			is_cached(RequestURL,digest);
-			snprintf(FinalURL, sizeof(FinalURL), "%s.bin", digest);
+			cached = is_cached(RequestURL,digest);
+			snprintf(FinalURL, sizeof(FinalURL), "%s/%s.bin", "cache",digest);
+			printf("FINAL:%s\n",FinalURL);
 			if(!blocked){
-				connect_server(FinalVersion,host_info,(void*)new_sock,80,FinalURL);
+				printf("Not Blocked\n");
+				if(!cached){
+					printf("Not Cached\n");
+					connect_server(FinalVersion,host_info,(void*)new_sock,80,FinalURL);
+				}
+				if(cached){
+				 printf("Cached\n");
+				 give_cache(FinalURL,(void*)new_sock);
+				}
 			}
 			else{
 				send(sock , "403 Forbidden\n" , strlen("403 Forbidden\n"),0);
@@ -410,4 +469,27 @@ int check_file_type(FILE *file, char* RequestURL){
 		else{return 7;}
 	return 7;
 	
+}
+int is_file_present(const char *folder_name, const char *file_name) {
+    DIR *dir;
+    struct dirent *entry;
+
+    // Open the directory
+    dir = opendir(folder_name);
+    if (dir == NULL) {
+        perror("Unable to open directory");
+        return -1; // Return -1 to indicate error
+    }
+
+    // Loop through directory entries
+    while ((entry = readdir(dir)) != NULL) {
+        if (entry->d_type == DT_REG && strcmp(entry->d_name, file_name) == 0) {
+            closedir(dir);
+            return 1; // Return 1 to indicate file found
+        }
+    }
+
+    closedir(dir);
+
+    return 0; // Return 0 to indicate file not found
 }

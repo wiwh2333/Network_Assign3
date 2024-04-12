@@ -19,20 +19,15 @@
 #include <time.h> //For cache timing
 
 #define MIN(a,b) ((a) < (b) ? (a) : (b))
-#define DEBUG 1
+#define DEBUG 0
 //the thread function
 void *connection_handler(void *);
 void connect_server(char *client_message,struct hostent *host_info, void *proxy_sock,int port,char *RequestURL);
 int check_file_type(FILE *file, char* RequestURL);
 int is_cached(char* RequestURL, char* digest);
 int is_file_present(const char *folder_name, const char *file_name);
-
-typedef struct {
-	char url[256];
-	char content[20000];
-	time_t timestamp;
-}CachedPage;
-
+void clear_old(time_t timeout);
+int timey;
 
 int main(int argc , char *argv[])
 {
@@ -44,11 +39,12 @@ int main(int argc , char *argv[])
 	/* 
    * check command line arguments 
    */
-  	if (argc != 2) {
-    	fprintf(stderr, "usage: %s <port>\n", argv[0]);
+  	if (argc != 3) {
+    	fprintf(stderr, "usage: %s <port> <Timeout> \n", argv[0]);
     	exit(1);
   	}
   	portno = atoi(argv[1]);
+	timey = atoi(argv[2]);
 	
 	//Create socket
 	socket_desc = socket(AF_INET , SOCK_STREAM , 0);
@@ -88,7 +84,7 @@ int main(int argc , char *argv[])
 	c = sizeof(struct sockaddr_in);
 	while( (client_sock = accept(socket_desc, (struct sockaddr *)&client, (socklen_t*)&c)) )
 	{
-		puts("Connection accepted");
+		//puts("Connection accepted");
 		
 		pthread_t sniffer_thread;
 		new_sock = malloc(1);
@@ -107,7 +103,7 @@ int main(int argc , char *argv[])
 	
 	    // char *message = "Greetings! I am your connection handler\nNow type something and i shall repeat what you type \n";
 	    // send(client_sock , message , strlen(message),0);
-		puts("Handler assigned");
+		//puts("Handler assigned");
 	}
 	
 	if (client_sock < 0)
@@ -118,11 +114,59 @@ int main(int argc , char *argv[])
 	
 	return 0;
 }
+void clear_old(time_t timeout){
+	DIR *dir;
+    struct dirent *entry;
+    struct stat file_stat;
+    time_t current_time;
+
+    // Open the cache
+    dir = opendir("cache");
+    if (dir == NULL) {
+        perror("Error opening directory");
+        return;
+    }
+
+    // Get the current time
+    time(&current_time);
+
+    // Iterate over directory entries
+    while ((entry = readdir(dir)) != NULL) {
+        // Ignore "." and ".." entries
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+            continue;
+        }
+
+        // Construct the full path of the file
+        char filepath[262]; // Adjust the size as needed
+        snprintf(filepath, sizeof(filepath), "%s/%s", "cache", entry->d_name);
+
+        // Get file status
+        if (stat(filepath, &file_stat) == -1) {
+            perror("Error getting file status");
+            continue;
+        }
+
+        // Check if file is older than timeout
+        if (current_time - file_stat.st_mtime > timeout) {
+            // Delete the file
+            if (unlink(filepath) == -1) {
+                perror("Error deleting file");
+            } else {
+                printf("Deleted file: %s\n", filepath);
+            }
+        }
+    }
+
+    // Close the directory
+    closedir(dir);
+}
 int give_cache(char *md5, void *proxy_sock){
 	char buffer[1000];
 	int bytes_read;
 	int socket_desc;
 	int sock = *(int*)proxy_sock;
+	
 	FILE *file = fopen(md5, "rb");
     if (file == NULL) {
         printf("Error opening file\n");
@@ -133,8 +177,11 @@ int give_cache(char *md5, void *proxy_sock){
     		printf("ERROR writing to client socket\n");
 			return 0;
 		}
+		#if DEBUG
 		printf("Writing\n");
+		#endif
     }
+	
 	fclose(file);
 	//close(socket_desc);//Close Output socket
 	return 1;
@@ -148,7 +195,6 @@ int is_cached(char *RequestURL, char *digest){
 	char inter[300]=" ";
 	char bin[100];
 	//memset(inter, 0 ,300);
-	printf("IS_CACHED_IN%s\n",RequestURL);
 	// Initialize the MD context
     mdctx = EVP_MD_CTX_new();
     if (mdctx == NULL) {
@@ -182,13 +228,10 @@ int is_cached(char *RequestURL, char *digest){
     }
 	int len = strlen(inter);
 	int i = 0;
-	printf("IS_CACHED_OUT1%x\n",inter);
 	for (int i = 0; i < len; i++) {
         sprintf(&digest[i*2], "%02x", inter[i]); // Convert each byte to hexadecimal string
     }
-	printf("IS_CACHED_OUT2%s\n",digest);
 	snprintf(bin, sizeof(bin), "%s.bin", digest);
-	printf("IS_CACHED_OUT3%s\n",digest);
 	if(is_file_present("cache",bin)){
 		printf("FILE IS HERE\n");
 		return 1;
@@ -202,13 +245,13 @@ void connect_server(char *client_message,struct hostent *host_info, void *proxy_
 	struct sockaddr_in server;
 	socket_desc = socket(AF_INET , SOCK_STREAM , 0);
 	char* URL;
-	printf("AHHH2%s\n",RequestURL);
 	// strcpy(URL, RequestURL);
 	// for (int i = 0; i < strlen(RequestURL); i++){
 	// 	URL[i] = RequestURL[i];
 	// }
-
+	#if DEBUG
 	printf("SENDING:\n%s\n",client_message);//Print Message recieved by HTML site
+	#endif 
 	if (socket_desc == -1)
 	{
 		printf("Could not create socket");
@@ -234,14 +277,13 @@ void connect_server(char *client_message,struct hostent *host_info, void *proxy_
     }
 	memset(client_message, 0 ,20000);
 	int bytes_received;
-	printf("AHHH3%s\n",RequestURL);
 	FILE *file = fopen(RequestURL, "ab");
 	if (file == NULL){printf("ERROR w/ FILE");}
 	while((bytes_received = recv(socket_desc, client_message, 1000, 0))>0){
     	if (bytes_received < 0){
         	perror("ERROR reading from server socket");
 		}
-		printf("Responce:%d|%s\n",bytes_received,client_message);
+		//printf("Responce:%d|%s\n",bytes_received,client_message);
 		if(fwrite(client_message, 1, bytes_received, file) != bytes_received){printf("ERROR WRITING TO OUT");fclose(file);}
 	//Forawrd Response to Client
 		if(send(sock, client_message, bytes_received, 0) < 0){
@@ -333,8 +375,9 @@ void *connection_handler(void *socket_desc)
 		}
 	//Send request to Server
 		else{
-			
+			#if DEBUG
 			printf ("WHAT:%s:%s:%s:%s|\n",RequestMethod,RequestURL,RequestVersion,host);
+			#endif
 			//Determine Valid URL
 			host_info = gethostbyname(host);
 			if (host_info == NULL){
@@ -371,9 +414,10 @@ void *connection_handler(void *socket_desc)
 			int *new_sock;
 			new_sock = malloc(1);
 			*new_sock = sock;
+			clear_old(timey);//Clear old Caches so they are not used
 			cached = is_cached(RequestURL,digest);
 			snprintf(FinalURL, sizeof(FinalURL), "%s/%s.bin", "cache",digest);
-			printf("FINAL:%s\n",FinalURL);
+			//printf("FINAL:%s\n",FinalURL);
 			if(!blocked){
 				printf("Not Blocked\n");
 				if(!cached){
@@ -389,12 +433,12 @@ void *connection_handler(void *socket_desc)
 				send(sock , "403 Forbidden\n" , strlen("403 Forbidden\n"),0);
 			}
 		}
-        printf("END OF LOOP\n");
+        //printf("END OF LOOP\n");
 	}
 
 	if(read_size == 0)
 	{
-		puts("Client disconnected");
+		//puts("Client disconnected");
 		fflush(stdout);
 	}
 	else if(read_size == -1)

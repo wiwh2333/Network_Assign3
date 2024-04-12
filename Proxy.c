@@ -13,13 +13,22 @@
 #include <errno.h> //For Errno (FILE)
 #include <sys/stat.h>  //For stat()
 #include <netdb.h> //For gethostbyname()
+#include <openssl/evp.h> //For MD5()
+#include <time.h> //For cache timing
 
 #define MIN(a,b) ((a) < (b) ? (a) : (b))
 #define DEBUG 1
 //the thread function
 void *connection_handler(void *);
-void connect_server(char *client_message,struct hostent *host_info, void *proxy_sock,int port);
+void connect_server(char *client_message,struct hostent *host_info, void *proxy_sock,int port,char *RequestURL);
 int check_file_type(FILE *file, char* RequestURL);
+int is_cached(char* RequestURL, char* digest);
+
+typedef struct {
+	char url[256];
+	char content[20000];
+	time_t timestamp;
+}CachedPage;
 
 
 int main(int argc , char *argv[])
@@ -106,12 +115,53 @@ int main(int argc , char *argv[])
 	
 	return 0;
 }
+int is_cached(char *RequestURL, char *digest){
+	EVP_MD_CTX *mdctx;
+	const EVP_MD *md;
+	int md_len;
+	
+	// Initialize the MD context
+    mdctx = EVP_MD_CTX_new();
+    if (mdctx == NULL) {
+        // Handle error
+        return -1;
+    }
+    // Set the MD algorithm (MD5 in this case)
+    md = EVP_md5();
+    if (md == NULL) {
+        // Handle error
+        EVP_MD_CTX_free(mdctx);
+        return -1;
+    }
+    // Initialize the MD context for the chosen algorithm
+    if (EVP_DigestInit_ex(mdctx, md, NULL) != 1) {
+        // Handle error
+        EVP_MD_CTX_free(mdctx);
+        return -1;
+    }
+    // Update the digest with the input data
+    if (EVP_DigestUpdate(mdctx, RequestURL, strlen(RequestURL)) != 1) {
+        // Handle error
+        EVP_MD_CTX_free(mdctx);
+        return -1;
+    }
+    // Finalize the digest and store it in the output buffer
+    if (EVP_DigestFinal_ex(mdctx, digest, &md_len) != 1) {
+        // Handle error
+        EVP_MD_CTX_free(mdctx);
+        return -1;
+    }
+	
+}
 
-void connect_server(char *client_message,struct hostent *host_info, void *proxy_sock, int port){
+void connect_server(char *client_message,struct hostent *host_info, void *proxy_sock, int port, char *RequestURL){
 	int socket_desc;
 	int sock = *(int*)proxy_sock;
 	struct sockaddr_in server;
 	socket_desc = socket(AF_INET , SOCK_STREAM , 0);
+	char* URL;
+	printf("AHHH%s\n",RequestURL);
+	strcpy(URL, RequestURL);
 	printf("SENDING:\n%s\n",client_message);//Print Message recieved by HTML site
 	if (socket_desc == -1)
 	{
@@ -138,16 +188,22 @@ void connect_server(char *client_message,struct hostent *host_info, void *proxy_
     }
 	memset(client_message, 0 ,20000);
 	int bytes_received;
+	printf("AHHH%s\n",URL);
+	FILE *file = fopen(URL, "ab");
+	if (file == NULL){printf("ERROR w/ FILE");}
 	while((bytes_received = recv(socket_desc, client_message, 1000, 0))>0){
     	if (bytes_received < 0){
         	perror("ERROR reading from server socket");
 		}
 		printf("Responce:%d|%s\n",bytes_received,client_message);
+		if(fwrite(client_message, 1, bytes_received, file) != bytes_received){printf("ERROR WRITING TO OUT");fclose(file);}
 	//Forawrd Response to Client
+		printf("Here");
 		if(send(sock, client_message, bytes_received, 0) < 0){
     		perror("ERROR writing to client socket");
 		}
 	}
+	fclose(file);
 	close(socket_desc);//Close Output socket
 }
 
@@ -162,7 +218,7 @@ void *connection_handler(void *socket_desc)
 	char *message , client_message[20000], file_length[20];
     char *RequestMethod, *RequestURL, *RequestHost;
 	char CompareMethod[256];
-	char FinalVersion[2000], FinalType[1000];
+	char FinalVersion[2000], FinalType[1000], FinalURL[256];
 	char host[256];
 	size_t bytes_read;
 	DIR *dir; FILE *file; FILE *out_bin; 
@@ -171,7 +227,10 @@ void *connection_handler(void *socket_desc)
 	char *RequestVersion; 
 	char *ifClose;
 	struct hostent *host_info;
-	
+	FILE *block;
+	int blocked = 0;
+	char line[256];
+	char digest[256];
 	
 	//Receive a message from client
 	while( (read_size = recv(sock , client_message , 2000 , 0)) > 0 )
@@ -229,6 +288,7 @@ void *connection_handler(void *socket_desc)
 		}
 	//Send request to Server
 		else{
+			
 			printf ("WHAT:%s:%s:%s:%s|\n",RequestMethod,RequestURL,RequestVersion,host);
 			//Determine Valid URL
 			host_info = gethostbyname(host);
@@ -236,13 +296,27 @@ void *connection_handler(void *socket_desc)
 				printf("HOST NAME IS INVALID\n");
 			}
 			else{
+				printf("HOST VERIFIED: %s\n", host_info->h_name);
 				struct in_addr **addr_list;
-
-    		addr_list = (struct in_addr **)host_info->h_addr_list;
+    			addr_list = (struct in_addr **)host_info->h_addr_list;
     			if (addr_list[0] != NULL) {
-        		printf("%s\n", inet_ntoa(*addr_list[0]));
+        		//printf("%s\n", inet_ntoa(*addr_list[0]));
     				}
-				//printf("HOST VERIFIED: %s\n", inet_ntoa(addr_list));
+				block = fopen("blocklist", "r");
+				while(fgets(line, 256, block) != NULL){
+					 // Remove the newline character if present
+        			if (line[strlen(line) - 1] == '\n') {
+         			   line[strlen(line) - 1] = '\0';
+        			}
+
+        			// Compare the line with the string to match
+        			if ((strcmp(line, host_info->h_name) == 0) || (strcmp(line, inet_ntoa(*addr_list[0])) == 0)) {
+         			   blocked = 1;
+					   printf("BLOCKED\n\n\n\n");
+        			}
+				}
+				
+				
 			}
 			//Connect to HTTP
 			
@@ -252,11 +326,14 @@ void *connection_handler(void *socket_desc)
 			int *new_sock;
 			new_sock = malloc(1);
 			*new_sock = sock;
-			connect_server(FinalVersion,host_info,(void*)new_sock,80);
-			// if(recv(sock , client_message , 20000 , 0)<0){
-			// 	printf("No recieve");
-			// }
-
+			is_cached(RequestURL,digest);
+			snprintf(FinalURL, sizeof(FinalURL), "%s.bin", digest);
+			if(!blocked){
+				connect_server(FinalVersion,host_info,(void*)new_sock,80,FinalURL);
+			}
+			else{
+				send(sock , "403 Forbidden\n" , strlen("403 Forbidden\n"),0);
+			}
 		}
         printf("END OF LOOP\n");
 	}
